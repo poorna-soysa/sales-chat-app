@@ -16,3 +16,6 @@ public sealed record YoYTotalsResponse(
     YoYTotals Totals,
     string DataAsOf
 );
+
+public sealed record YoYMonthlyToolArgs(string Customer, int? Year = null);
+public sealed record YoYTotalsToolArgs(string Customer, int? Year = null);
