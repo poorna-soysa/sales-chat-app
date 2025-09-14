@@ -148,12 +148,56 @@ Assistant (tool): GetTopMaterialsAsync(country='India', year=2025, quarter=2, to
 
     private static (int? thisY, int? lastY) ExtractYears(string text)
     {
+        if (string.IsNullOrWhiteSpace(text))
+            return (null, null);
+
+        var lower = text.ToLowerInvariant();
+
+        // 1) Determine anchor year (current year or override)
+        var anchorYear = DateTime.UtcNow.Year; // or use max year from DB if you prefer
+
+        int? thisYear = null;
+        int? lastYear = null;
+
+        // 2) Detect explicit 20xx years first
         var matches = System.Text.RegularExpressions.Regex.Matches(text, @"\b(20\d{2})\b");
-        var years = matches.Select(m => int.Parse(m.Value)).Distinct().OrderBy(y => y).ToArray();
-        if (years.Length >= 2) return (years[^1], years[^2]); // max = this, next = last
-        if (years.Length == 1) return (years[0], null);
-        return (null, null);
+        var years = matches.Select(m => int.Parse(m.Value))
+                           .Distinct()
+                           .OrderBy(y => y)
+                           .ToArray();
+
+        if (years.Length >= 2)
+        {
+            // Two or more explicit years: take max as thisYear, previous as lastYear
+            thisYear = years[^1];
+            lastYear = years[^2];
+        }
+        else if (years.Length == 1)
+        {
+            thisYear = years[0];
+        }
+
+        // 3) Detect relative phrases ("this year", "last year")
+        if (lower.Contains("this year"))
+        {
+            thisYear ??= anchorYear;
+            lastYear ??= thisYear - 1;
+        }
+        if (lower.Contains("last year"))
+        {
+            lastYear ??= anchorYear - 1;
+            thisYear ??= lastYear + 1;
+        }
+
+        // 4) Ensure ordering: thisYear >= lastYear
+        if (thisYear is not null && lastYear is not null && lastYear > thisYear)
+        {
+            (thisYear, lastYear) = (lastYear, thisYear);
+        }
+
+        return (thisYear, lastYear);
     }
+
 
 
     [Description("Month-by-month YoY revenue for a customer between two years.")]
