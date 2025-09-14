@@ -19,3 +19,20 @@ public sealed record YoYTotalsResponse(
 
 public sealed record YoYMonthlyToolArgs(string Customer, int? Year = null);
 public sealed record YoYTotalsToolArgs(string Customer, int? Year = null);
+
+public sealed record CustomerListRow(
+    int CustomerId,
+    string CustomerName,
+    string Country,
+    string? KAM,
+    string? AAM
+);
+public sealed record BudgetVarianceResponse(
+    string? Customer, string? Country, int Year, int? Quarter,
+    decimal Actual, decimal Budget, decimal VarianceValue, decimal? VariancePct,
+    string DataAsOf);
+
+public sealed record ForecastAccuracyResponse(
+    string? Customer, string? Country, int Year, int? Quarter,
+    decimal MAPE, decimal Bias,
+    string DataAsOf);

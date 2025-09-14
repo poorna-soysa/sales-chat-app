@@ -10,14 +10,13 @@ public interface IMetricsService
     Task<YoYTotalsResponse> GetCustomerYoYTotalsAsync(string customer, int? year, int? yearLast, CancellationToken ct);
     Task<IReadOnlyList<TopMaterialRow>> GetTopMaterialsAsync(
          string? customer, string? country, int? year, int? quarter, int topN, CancellationToken ct);
-    Task<BudgetVarianceResponse> GetBudgetVsActualAsync(
-    string? customer, string? country, int? year, int? quarter, CancellationToken ct);
+    Task<BudgetVarianceResponse> GetBudgetVsActualAsync(string? customer, string? country, int? year, int? quarter, CancellationToken ct);
 
-    Task<ForecastAccuracyResponse> GetForecastAccuracyAsync(string? customer, string? country, int? year, int? quarter,
-        CancellationToken ct);
+    Task<ForecastAccuracyResponse> GetForecastAccuracyAsync(string? customer, string? country, int? year, int? quarter, CancellationToken ct);
 
-    Task<IReadOnlyList<TopCustomerRow>> GetTopCustomersAsync(
-    string? country, int? year, int? quarter, int topN, CancellationToken ct);
+    Task<IReadOnlyList<TopCustomerRow>> GetTopCustomersAsync(string? country, int? year, int? quarter, int topN, CancellationToken ct);
+
+    Task<IReadOnlyList<CustomerListRow>> GetCustomersAsync(string? search = null, string? country = null, CancellationToken ct = default);
 }
 
 
@@ -309,6 +308,40 @@ public sealed class MetricsService(AppDbContext db) : IMetricsService
                 new SqlParameter("@quarter", (object?)quarter ?? DBNull.Value),
                 new SqlParameter("@topN", topN))
             .AsNoTracking()
+            .ToListAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<CustomerListRow>> GetCustomersAsync(
+    string? search = null,
+    string? country = null,
+    CancellationToken ct = default)
+    {
+        var q = db.DimCustomers.AsNoTracking().AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim();
+            q = q.Where(c =>
+                c.CustomerName.Contains(s) ||
+                (c.KAM != null && c.KAM.Contains(s)) ||
+                (c.AAM != null && c.AAM.Contains(s)));
+        }
+
+        if (!string.IsNullOrWhiteSpace(country))
+            q = q.Where(c => c.Country == country);
+
+       
+
+        // Sort: name asc, then country
+        q = q.OrderBy(c => c.CustomerName).ThenBy(c => c.Country);
+
+        return await q           
+            .Select(c => new CustomerListRow(
+                c.CustomerId,
+                c.CustomerName,
+                c.Country,
+                c.KAM,
+                c.AAM))
             .ToListAsync(ct);
     }
 

@@ -2,26 +2,12 @@
 
 namespace ChatAppSales.Entities;
 
-
-
-
 [Keyless]
 public sealed class YearRevenueRow
 {
     public int Year { get; set; }
     public decimal Revenue { get; set; }
 }
-
-public sealed record BudgetVarianceResponse(
-    string? Customer, string? Country, int Year, int? Quarter,
-    decimal Actual, decimal Budget, decimal VarianceValue, decimal? VariancePct,
-    string DataAsOf);
-
-public sealed record ForecastAccuracyResponse(
-    string? Customer, string? Country, int Year, int? Quarter,
-    decimal MAPE, decimal Bias,
-    string DataAsOf);
-
 
 [Keyless]
 public sealed class YearMonthRevenueRow
