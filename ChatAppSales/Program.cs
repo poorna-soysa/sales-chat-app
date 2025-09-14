@@ -1,7 +1,6 @@
 using Microsoft.Extensions.AI;
 using ChatAppSales.Components;
 using ChatAppSales.Services;
-using ChatAppSales.Services.Ingestion;
 using OpenAI;
 using System.ClientModel;
 using ChatAppSales.Data;
@@ -52,6 +51,5 @@ app.MapGet("/api/Seed", async (AppDbContext appDb) =>
 {
     await DemoSeeder.SeedAsync(appDb, 3);
 });
-
 
 app.Run();
