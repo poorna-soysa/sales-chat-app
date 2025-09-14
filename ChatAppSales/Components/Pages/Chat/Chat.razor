@@ -1,0 +1,233 @@
+﻿@page "/"
+@using System.ComponentModel
+@using ChatAppSales.Entities
+@inject IChatClient ChatClient
+@inject NavigationManager Nav
+@inject IMetricsService MetricsService
+@implements IDisposable
+
+<PageTitle>Chat</PageTitle>
+
+<ChatHeader OnNewChat="@ResetConversationAsync" />
+
+<ChatMessageList Messages="@messages" InProgressMessage="@currentResponseMessage">
+    <NoMessagesContent>
+        <div>To get started, try asking about these example documents. You can replace these with your own data and replace this message.</div>
+        <ChatCitation File="Example_Emergency_Survival_Kit.pdf" />
+        <ChatCitation File="Example_GPS_Watch.pdf" />
+    </NoMessagesContent>
+</ChatMessageList>
+
+<div class="chat-container">
+    <ChatSuggestions OnSelected="@AddUserMessageAsync" @ref="@chatSuggestions" />
+    <ChatInput OnSend="@AddUserMessageAsync" @ref="@chatInput" />
+    <SurveyPrompt /> @* Remove this line to eliminate the template survey message *@
+</div>
+
+@code {
+    // private const string SystemPrompt = @"
+    //     You are an assistant who answers questions about information you retrieve.
+    //     Do not answer questions about anything else.
+    //     Use only simple markdown to format your responses.
+
+    //     Use the search tool to find relevant information. When you do this, end your
+    //     reply with citations in the special XML format:
+
+    //     <citation filename='string' page_number='number'>exact quote here</citation>
+
+    //     Always include the citation in your response if there are results.
+
+    //     The quote must be max 5 words, taken word-for-word from the search result, and is the basis for why the citation is relevant.
+    //     Don't refer to the presence of citations; just emit these tags right at the end, with no surrounding text.
+    //     ";
+
+    private const string SystemPrompt = @"
+You are an S&OP analytics assistant for company sales data.
+
+### Core Rules:
+- Answer only using the tools provided. Never guess numbers or fabricate data.
+- For numeric questions, always call the most appropriate tool and pass correct filters (customer, country, year, quarter).
+- Format answers for executives:
+  - First line: concise insight
+  - Then a small markdown table if multiple rows are returned
+  - End with _Data as of: YYYY-MM-DD_
+- Format numbers with thousands separators, percentages with two decimals.
+- If a user asks for top customers, market share, Pareto, or 80/20 view, call GetTopCustomersAsync.
+
+### Tool Selection:
+- **YoY Comparison (Totals)** → GetCustomerYoYTotalsAsync
+- **YoY Comparison (Monthly)** → GetCustomerYoYMonthlyAsync
+- **Budget vs Actual / Variance** → GetBudgetVsActualAsync
+- **Forecast Accuracy / MAPE / Bias** → GetForecastAccuracyAsync
+- **Top Materials / Products by Revenue** → GetTopMaterialsAsync
+- **Top Customers** → GetTopCustomersAsync
+
+### Filters:
+- If the user mentions two years (e.g., “2025 vs 2024”), pass both years.
+- If only one year is given, pass as yearThis and leave yearLast empty.
+- If no year is given, omit both (backend will use latest year).
+- If no customer/country is specified, return company-wide data.
+- If customer is required but missing, ask: “Which customer should I use?”
+
+### Example Tool Calls:
+User: Monthly YoY breakdown for 2025 vs 2024 for Colombo Superstores
+Assistant (tool): GetCustomerYoYMonthlyAsync(customer='Colombo Superstores', yearThis=2025, yearLast=2024)
+
+User: Show me Budget vs Actual for Atlas Retail Group in Q3 2025
+Assistant (tool): GetBudgetVsActualAsync(customer='Atlas Retail Group', year=2025, quarter=3)
+
+User: What is forecast accuracy for Germany this year?
+Assistant (tool): GetForecastAccuracyAsync(country='Germany')
+
+User: Top 5 materials by revenue for India in Q2 2025
+Assistant (tool): GetTopMaterialsAsync(country='India', year=2025, quarter=2, topN=5)
+";
+
+
+
+    public sealed record YoYMonthlyToolArgs(string Customer, int? Year = null);
+    public sealed record YoYTotalsToolArgs(string Customer, int? Year = null);
+
+    private readonly ChatOptions chatOptions = new();
+    private readonly List<ChatMessage> messages = new();
+    private CancellationTokenSource? currentResponseCancellation;
+    private ChatMessage? currentResponseMessage;
+    private ChatInput? chatInput;
+    private ChatSuggestions? chatSuggestions;
+
+    protected override void OnInitialized()
+    {
+        messages.Add(new(ChatRole.System, SystemPrompt));
+        chatOptions.Tools = [
+            AIFunctionFactory.Create(GetCustomerYoYMonthlyAsync),
+        AIFunctionFactory.Create(GetCustomerYoYTotalsAsync),
+        AIFunctionFactory.Create(GetTopMaterialsAsync),
+         AIFunctionFactory.Create(GetBudgetVsActualAsync),
+        AIFunctionFactory.Create(GetForecastAccuracyAsync),
+        AIFunctionFactory.Create(GetTopCustomersAsync)];
+;
+    }
+
+    private async Task AddUserMessageAsync(ChatMessage userMessage)
+    {
+        CancelAnyCurrentResponse();
+
+        // Add the user message to the conversation
+        messages.Add(userMessage);
+
+        // Year hints (non-user-visible helper message that LLM can read)
+        var (yearThis, yearLast) = ExtractYears(userMessage.Text ?? "");
+        if (yearThis is not null || yearLast is not null)
+        {
+            messages.Add(new ChatMessage(
+                ChatRole.System,
+                $"[HINT] yearThis={yearThis?.ToString() ?? "null"}, yearLast={yearLast?.ToString() ?? "null"}"
+            ));
+        }
+
+        chatSuggestions?.Clear();
+        await chatInput!.FocusAsync();
+
+        // Stream and display a new response from the IChatClient
+        var responseText = new TextContent("");
+        currentResponseMessage = new ChatMessage(ChatRole.Assistant, [responseText]);
+        currentResponseCancellation = new();
+        await foreach (var update in ChatClient.GetStreamingResponseAsync([.. messages], chatOptions, currentResponseCancellation.Token))
+        {
+            messages.AddMessages(update, filter: c => c is not TextContent);
+            responseText.Text += update.Text;
+            ChatMessageItem.NotifyChanged(currentResponseMessage);
+        }
+
+        // Store the final response in the conversation, and begin getting suggestions
+        messages.Add(currentResponseMessage!);
+        currentResponseMessage = null;
+        //chatSuggestions?.Update(messages);
+    }
+
+    private void CancelAnyCurrentResponse()
+    {
+        // If a response was cancelled while streaming, include it in the conversation so it's not lost
+        if (currentResponseMessage is not null)
+        {
+            messages.Add(currentResponseMessage);
+        }
+
+        currentResponseCancellation?.Cancel();
+        currentResponseMessage = null;
+    }
+
+    private async Task ResetConversationAsync()
+    {
+        CancelAnyCurrentResponse();
+        messages.Clear();
+        messages.Add(new(ChatRole.System, SystemPrompt));
+        chatSuggestions?.Clear();
+        await chatInput!.FocusAsync();
+    }
+
+    private static (int? thisY, int? lastY) ExtractYears(string text)
+    {
+        var matches = System.Text.RegularExpressions.Regex.Matches(text, @"\b(20\d{2})\b");
+        var years = matches.Select(m => int.Parse(m.Value)).Distinct().OrderBy(y => y).ToArray();
+        if (years.Length >= 2) return (years[^1], years[^2]); // max = this, next = last
+        if (years.Length == 1) return (years[0], null);
+        return (null, null);
+    }
+
+
+    [Description("Month-by-month YoY revenue for a customer between two years.")]
+    private Task<YoYResponse> GetCustomerYoYMonthlyAsync(
+    [Description("Customer name (exact).")] string customer,
+    [Description("Target/current year (e.g., 2025).")] int? yearThis = null,
+    [Description("Comparison/previous year (e.g., 2024).")] int? yearLast = null,
+    CancellationToken ct = default)
+    => MetricsService.GetCustomerYoYByMonthAsync(customer, yearThis, yearLast, ct);
+
+    [Description("Totals-only YoY revenue for a customer between two years.")]
+    private Task<YoYTotalsResponse> GetCustomerYoYTotalsAsync(
+        [Description("Customer name (exact).")] string customer,
+        [Description("Target/current year (e.g., 2025).")] int? yearThis = null,
+        [Description("Comparison/previous year (e.g., 2024).")] int? yearLast = null,
+        CancellationToken ct = default)
+        => MetricsService.GetCustomerYoYTotalsAsync(customer, yearThis, yearLast, ct);
+
+    [Description("Returns top-N materials by revenue for the given year/quarter and optional filters.")]
+    private Task<IReadOnlyList<TopMaterialRow>> GetTopMaterialsAsync(
+string? customer = null, string? country = null, int? year = null, int? quarter = null, int topN = 10, CancellationToken ct = default)
+=> MetricsService.GetTopMaterialsAsync(customer, country, year, quarter, topN, ct);
+
+
+    // Budget vs Actual
+    [Description("Returns Budget vs Actual (variance) for optional customer/country filters, by year/quarter.")]
+    private Task<BudgetVarianceResponse> GetBudgetVsActualAsync(
+        [Description("Exact customer name (optional).")] string? customer = null,
+        [Description("Country filter (optional).")] string? country = null,
+        [Description("Calendar year (optional, defaults to latest).")] int? year = null,
+        [Description("Quarter 1-4 (optional).")] int? quarter = null,
+        CancellationToken ct = default)
+        => MetricsService.GetBudgetVsActualAsync(customer, country, year, quarter, ct);
+
+    // Forecast Accuracy
+    [Description("Returns forecast accuracy metrics (MAPE and Bias) for optional customer/country filters, by year/quarter.")]
+    private Task<ForecastAccuracyResponse> GetForecastAccuracyAsync(
+        [Description("Exact customer name (optional).")] string? customer = null,
+        [Description("Country filter (optional).")] string? country = null,
+        [Description("Calendar year (optional, defaults to latest).")] int? year = null,
+        [Description("Quarter 1-4 (optional).")] int? quarter = null,
+        CancellationToken ct = default)
+        => MetricsService.GetForecastAccuracyAsync(customer, country, year, quarter, ct);
+
+    [Description("Returns top-N customers ranked by revenue, with optional country/year/quarter filters.")]
+    private Task<IReadOnlyList<TopCustomerRow>> GetTopCustomersAsync(
+[Description("Country filter (optional).")] string? country = null,
+[Description("Calendar year (optional).")] int? year = null,
+[Description("Quarter 1-4 (optional).")] int? quarter = null,
+[Description("Number of customers to return. Default = 10.")] int topN = 10,
+CancellationToken ct = default)
+=> MetricsService.GetTopCustomersAsync(country, year, quarter, topN, ct);
+
+
+    public void Dispose()
+        => currentResponseCancellation?.Cancel();
+}
